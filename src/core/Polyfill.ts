@@ -1,7 +1,6 @@
 import Options from './Options';
 
 export default class Polyfill {
-	private options: Options;
 	private parser: HTMLAnchorElement;
 	private observer: MutationObserver;
 	private process: boolean;
@@ -9,19 +8,11 @@ export default class Polyfill {
 		files: Map<string, HTMLElement|null>;
 		elements: Map<SVGUseElement, string>;
 	};
-	private handler: {
-		viewportChange: EventListener;
-		documentChange: MutationCallback;
-	};
 
 	private defaults: Options = {
 		target: 'svg use',
 		context: window.document.body || window.document.documentElement,
 		root: window.document.body || window.document.documentElement,
-		run: true,
-		prefix: true,
-		detect: true,
-		observe: true,
 		crossdomain: true,
 		namespace: 'external-svg-polyfill',
 		agents: [
@@ -31,53 +22,33 @@ export default class Polyfill {
 		],
 	};
 
-	public constructor(options?: Options) {
-		this.options = {
-			...this.defaults,
-			...options,
-		};
-
+	public constructor() {
 		this.cache = {
 			files: new Map(),
 			elements: new Map(),
 		};
 
-		this.handler = {
-			viewportChange: this.onViewportChange.bind(this),
-			documentChange: this.onDocumentChanged.bind(this),
-		};
-
-		this.observer = new MutationObserver(this.handler.documentChange);
+		this.observer = new MutationObserver(this.updateElements.bind(this));
 		this.parser = window.document.createElement('a');
 
-		this.process = !this.options.detect || this.detect();
-		this.options.run && this.run();
-	}
-
-	public run(): void {
-		this.updateElements();
-		this.options.observe && this.observe();
+		this.process = this.detect();
+    this.updateElements();
+		this.observe();
 	}
 
 	public detect(): boolean {
-		return this.options.agents.some((agent: RegExp) => agent.test(window.navigator.userAgent));
+		return this.defaults.agents.some((agent: RegExp) => agent.test(window.navigator.userAgent));
 	}
 
 	public observe(): void {
-		this.observer.observe(this.options.context, {
+		this.observer.observe(this.defaults.context, {
 			childList: true,
 			subtree: true,
 		});
-
-		window.addEventListener('resize', this.handler.viewportChange);
-		window.addEventListener('orientationchange', this.handler.viewportChange);
 	}
 
 	public unobserve(): void {
 		this.observer.disconnect();
-
-		window.removeEventListener('resize', this.handler.viewportChange);
-		window.removeEventListener('orientationchange', this.handler.viewportChange);
 	}
 
 	public destroy(): void {
@@ -94,16 +65,16 @@ export default class Polyfill {
 
 		this.cache.files.forEach((file, address) => {
 			file && this.dispatchEvent(file, 'remove', { address }, () => {
-				this.renderFrame(() => this.options.root.removeChild(file));
+				this.renderFrame(() => this.defaults.root.removeChild(file));
 				this.cache.files.delete(address);
 			});
 		});
 	}
 
 	private updateElements(): void {
-		const elements = typeof this.options.target === 'string'
-			? [].slice.call(this.options.context.querySelectorAll(this.options.target))
-			: this.options.target;
+		const elements = typeof this.defaults.target === 'string'
+			? [].slice.call(this.defaults.context.querySelectorAll(this.defaults.target))
+			: this.defaults.target;
 
 		Array.from(elements).forEach(this.processElement.bind(this));
 	}
@@ -114,9 +85,9 @@ export default class Polyfill {
 		if (value && !value.startsWith('#') && !this.cache.elements.has(element)) {
 			this.parser.href = value;
 
-			if (this.process || (this.options.crossdomain && window.location.origin !== this.parser.origin)) {
+			if (this.process || (this.defaults.crossdomain && window.location.origin !== this.parser.origin)) {
 				const address = this.parser.href.split('#')[0];
-				const identifier = this.generateIdentifier(this.parser.hash, this.parser.pathname);
+				const identifier = this.generateIdentifier(this.parser.hash);
 
 				if (address && !this.cache.files.has(address)) {
 					this.dispatchEvent(element, 'load', { address }, () => {
@@ -143,18 +114,14 @@ export default class Polyfill {
 		loader.send();
 	}
 
-	private generateIdentifier(identifier: string, prefix: string): string {
+	private generateIdentifier(identifier: string): string {
 		identifier = identifier.replace('#', '');
-		prefix = prefix.replace(/^\//, '').replace(/\.svg$/, '').replace(/[^a-zA-Z0-9]/g, '-');
-
-		return this.options.prefix
-			? `${prefix}-${identifier}`
-			: identifier;
+		return identifier;
 	}
 
 	private dispatchEvent(element: Element, name: string, detail?: any, callback?: Function): void {
 		const event = window.document.createEvent('CustomEvent');
-		event.initCustomEvent(`${this.options.namespace}.${name}`, true, true, detail);
+		event.initCustomEvent(`${this.defaults.namespace}.${name}`, true, true, detail);
 
 		element.dispatchEvent(event);
 
@@ -172,27 +139,6 @@ export default class Polyfill {
 		element.hasAttribute('xlink:href') && element.setAttribute('xlink:href', value);
 	}
 
-	private prefixValues(file: HTMLElement, prefix: string): void {
-		[].slice.call(file.querySelectorAll('[id]')).forEach((reference: HTMLElement) => {
-			const value = reference.getAttribute('id')!;
-			const identifier = this.generateIdentifier(value, prefix);
-
-			reference.setAttribute('id', identifier);
-
-			[].slice.call(file.querySelectorAll(`[fill="url(#${value})"]`)).forEach((referencee: HTMLElement) => {
-				referencee.setAttribute('fill', `url(#${identifier})`);
-			});
-		});
-	}
-
-	private onDocumentChanged(): void {
-		this.updateElements();
-	}
-
-	private onViewportChange(): void {
-		this.updateElements();
-	}
-
 	private onFileLoaded(event: Event, address: string): void {
 		const file = (event.target as XMLHttpRequest).response.documentElement;
 		file.setAttribute('aria-hidden', 'true');
@@ -203,14 +149,9 @@ export default class Polyfill {
 
 		this.cache.files.set(address, file);
 
-		if (this.options.prefix) {
-			this.parser.href = address;
-			this.prefixValues(file, this.parser.pathname);
-		}
-
-		this.dispatchEvent(this.options.root, 'insert', { address, file }, () => {
+		this.dispatchEvent(this.defaults.root, 'insert', { address, file }, () => {
 			this.renderFrame(() => {
-				this.options.root.insertAdjacentElement('afterbegin', file);
+				this.defaults.root.insertAdjacentElement('afterbegin', file);
 			});
 		});
 	}
